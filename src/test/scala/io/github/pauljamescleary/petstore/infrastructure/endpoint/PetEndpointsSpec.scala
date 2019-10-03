@@ -2,21 +2,21 @@ package io.github.pauljamescleary.petstore
 package infrastructure.endpoint
 
 import cats.data.NonEmptyList
-import domain.users._
-import domain.pets._
-import infrastructure.repository.inmemory._
 import cats.effect._
 import io.circe.generic.auto._
+import io.github.pauljamescleary.petstore.domain.pets._
+import io.github.pauljamescleary.petstore.domain.users._
+import io.github.pauljamescleary.petstore.infrastructure.repository.inmemory._
 import org.http4s._
-import org.http4s.implicits._
-import org.http4s.dsl._
 import org.http4s.circe._
 import org.http4s.client.dsl.Http4sClientDsl
+import org.http4s.dsl._
+import org.http4s.implicits._
 import org.http4s.server.Router
 import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import tsec.mac.jca.HMACSHA256
-import org.scalatest.matchers.should.Matchers
 
 class PetEndpointsSpec
     extends AnyFunSuite
@@ -28,6 +28,8 @@ class PetEndpointsSpec
 
   implicit val petEnc: EntityEncoder[IO, Pet] = jsonEncoderOf
   implicit val petDec: EntityDecoder[IO, Pet] = jsonOf
+
+  implicit val listPetDec: EntityDecoder[IO, List[Pet]] = jsonOf
 
   def getTestResources(): (AuthTest[IO], HttpApp[IO], PetRepositoryInMemoryInterpreter[IO]) = {
     val userRepo = UserRepositoryInMemoryInterpreter[IO]()
@@ -120,5 +122,48 @@ class PetEndpointsSpec
       }).unsafeRunSync
     }
 
+  }
+
+  test("delete pet") {
+    val (auth, petRoutes, petRepo) = getTestResources()
+
+    forAll { (pet: Pet, user: AdminUser) =>
+      (for {
+        createRequest <- POST(pet, uri"/pets")
+          .flatMap(auth.embedToken(user.value, _))
+        createResponse <- petRoutes.run(createRequest)
+        createPet <- createResponse.as[Pet]
+        deleteRequest <- DELETE(Uri.unsafeFromString(s"/pets/${createPet.id.get}"))
+          .flatMap(auth.embedToken(user.value, _))
+        _ <- petRoutes.run(deleteRequest)
+      } yield {
+        petRepo.get(createPet.id.get).unsafeRunSync() shouldEqual None
+      }).unsafeRunSync()
+    }
+  }
+
+  test("list pet") {
+    val (auth, petRoutes, petRepo) = getTestResources()
+
+    forAll { (pet: Pet, user: AdminUser) =>
+      (for {
+        createRequest1 <- POST(pet, uri"/pets")
+          .flatMap(auth.embedToken(user.value, _))
+        createResponse1 <- petRoutes.run(createRequest1)
+        createPet1 <- createResponse1.as[Pet]
+        createRequest2 <- POST(pet.copy(name = pet.name + 2, id = pet.id.map(_ + 10)), uri"/pets")
+          .flatMap(auth.embedToken(user.value, _))
+        createResponse2 <- petRoutes.run(createRequest2)
+        createPet2 <- createResponse2.as[Pet]
+        listRequest <- GET(uri"/pets")
+          .flatMap(auth.embedToken(user.value, _))
+        listResponse <- petRoutes.run(listRequest)
+        listPet <- listResponse.as[List[Pet]]
+      } yield {
+        listPet.size shouldEqual 2
+        petRepo.delete(createPet1.id.get)
+        petRepo.delete(createPet2.id.get)
+      }).unsafeRunSync()
+    }
   }
 }
